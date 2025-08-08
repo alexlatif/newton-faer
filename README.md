@@ -18,6 +18,89 @@ Architecture at a glance
 
 Your model implements NonlinearSystem (residual + Jacobian/refresh), optionally with its own Jacobian cache.
 
+## Interface split: model ↔ engine (sparse-first)
+The engine doesn’t know your math. You provide two tiny pieces:
+
+1/ NonlinearSystem (your model)
+- layout() → problem size / indexing (RowMap)
+- residual(x, out) → compute 𝐹(𝑥)
+- refresh_jacobian(x) → update values of a cached sparse Jacobian
+- jacobian() / jacobian_mut() → hand back the cache handle
+
+2/ JacobianCache (your storage)
+- Owns the symbolic pattern (SymbolicSparseColMat) once
+- Exposes a mutable values slice each iteration
+- Engine calls attach() to get a SparseColMatRef for factorization
+
+```rust
+use newton_faer::{NonlinearSystem, RowMap, JacobianCache, NewtonCfg, solve};
+use faer::sparse::{SymbolicSparseColMat, Pair};
+
+struct Layout;
+impl RowMap for Layout {
+    type Var = ();
+    fn dim(&self) -> usize { 2 }
+    fn row(&self, _i: usize, _v: ()) -> Option<usize> { None }
+}
+
+struct Jc { sym: SymbolicSparseColMat<usize>, vals: Vec<f64> }
+impl JacobianCache<f64> for Jc {
+    fn symbolic(&self) -> &SymbolicSparseColMat<usize> { &self.sym }
+    fn values(&self) -> &[f64] { &self.vals }
+    fn values_mut(&mut self) -> &mut [f64] { &mut self.vals }
+}
+
+struct Model { lay: Layout, jac: Jc }
+
+impl Model {
+    fn new() -> Self {
+        let pairs = [
+            Pair{row:0, col:0}, Pair{row:1, col:0},
+            Pair{row:0, col:1}, Pair{row:1, col:1},
+        ];
+        let (sym, _) = SymbolicSparseColMat::try_new_from_indices(2, 2, &pairs).unwrap();
+        let nnz = sym.col_ptr()[sym.ncols()];
+        Self { lay: Layout, jac: Jc { sym, vals: vec![0.0; nnz] } }
+    }
+}
+
+impl NonlinearSystem for Model {
+    type Real = f64;
+    type Layout = Layout;
+
+    fn layout(&self) -> &Self::Layout { &self.lay }
+    fn jacobian(&self) -> &dyn JacobianCache<Self::Real> { &self.jac }
+    fn jacobian_mut(&mut self) -> &mut dyn JacobianCache<Self::Real> { &mut self.jac }
+
+    fn residual(&self, x: &[f64], out: &mut [f64]) {
+        // f1 = sin(x) + y
+        // f2 = x + exp(y) - 1
+        out[0] = x[0].sin() + x[1];
+        out[1] = x[0] + x[1].exp() - 1.0;
+    }
+
+    fn refresh_jacobian(&mut self, x: &[f64]) {
+        // J = [[cos(x), 1],
+        //      [     1, exp(y)]] in CSC (col-major): (0,0),(1,0),(0,1),(1,1)
+        let v = self.jac.values_mut();
+        v[0] = x[0].cos();
+        v[1] = 1.0;
+        v[2] = 1.0;
+        v[3] = x[1].exp();
+    }
+}
+
+// usage
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    newton_faer::init_global_parallelism(0); // use all cores
+    let mut model = Model::new();
+    let mut x = [0.2, 0.0]; // initial guess
+    let iters = solve(&mut model, &mut x, NewtonCfg::sparse().with_adaptive(true))?;
+    println!("iters={iters}, x={:.6}, y={:.6}", x[0], x[1]);
+    Ok(())
+}
+```
+
 
 ## Parallelism
 

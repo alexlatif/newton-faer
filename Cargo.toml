@@ -21,6 +21,10 @@ include = [
 name = "newton_faer"
 path = "src/lib.rs"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
