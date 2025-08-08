@@ -168,7 +168,7 @@ let (tx, rx) = mpsc::channel::<IterationStats<f64>>();
 let cancel = Arc::new(AtomicBool::new(false));
 let cancel_flag = cancel.clone();
 
-let mut system = /* build system */;
+let mut model = /* build system */;
 std::thread::spawn(move || {
     let _ = solver::solve_cb(&mut model, &mut x, cfg.with_adaptive(true), |st| {
         let _ = tx.send(st.clone());
