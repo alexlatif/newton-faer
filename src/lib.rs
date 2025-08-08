@@ -1,13 +1,13 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
-mod engine;
 mod linalg;
+mod solver;
 
-pub use engine::{
+pub use linalg::{DenseLu, FaerLu};
+pub use solver::{
     Control, IterationStats, Iterations, MatrixFormat, NewtonCfg, solve, solve_cb, solve_dense_cb,
     solve_sparse_cb,
 };
-pub use linalg::{DenseLu, FaerLu};
 
 use core::fmt::{self, Display, Formatter};
 use core::num::NonZeroUsize;

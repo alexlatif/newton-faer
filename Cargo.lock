@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "newton_faer"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "dyn-stack 0.13.0",
  "error-stack",
