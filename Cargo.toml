@@ -9,7 +9,7 @@ repository = "https://github.com/alexlatif/newton-faer"
 homepage = "https://github.com/alexlatif/newton-faer"
 documentation = "https://docs.rs/newton-faer"
 keywords = ["nonlinear", "optimization", "algebra", "linear", "faer", "newton"]
-readme = "../README.md"
+readme = "./README.md"
 include = [
     "src/**/*",
     "Cargo.toml",
