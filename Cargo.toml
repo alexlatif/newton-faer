@@ -24,6 +24,7 @@ path = "src/lib.rs"
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+doctest = false
 
 [dependencies]
 serde         = { version = "1", features = ["derive"] }
