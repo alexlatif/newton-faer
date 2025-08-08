@@ -149,12 +149,11 @@ where
             return Ok(iter + 1);
         }
 
-        solve_into(model, x, &f, &mut dx)?; // << fill dx in-place
+        solve_into(model, x, &f, &mut dx)?;
 
         let mut step_applied = false;
 
         if cfg.adaptive {
-            // progress -> grow damping a bit
             if res < last_res {
                 let nd = damping * cfg.grow;
                 damping = if nd > cfg.max_damping {
@@ -163,7 +162,6 @@ where
                     nd
                 };
             } else {
-                // regression -> shrink damping
                 let nd = damping * cfg.shrink;
                 damping = if nd < cfg.min_damping {
                     cfg.min_damping
@@ -172,7 +170,6 @@ where
                 };
             }
 
-            // divergence guard + backtracking when blow-up
             if last_res.is_finite() && res > last_res * cfg.divergence_ratio {
                 let mut alpha = if damping * cfg.shrink < cfg.min_damping {
                     cfg.min_damping
@@ -287,7 +284,6 @@ where
             model.refresh_jacobian(x);
             lin.factor(&model.jacobian().attach())?;
 
-            // rhs = -f
             rhs.col_mut(0)
                 .as_mut()
                 .iter_mut()
@@ -296,7 +292,6 @@ where
 
             lin.solve_in_place(&mut rhs)?;
 
-            // copy solution into dx (no allocation)
             for i in 0..n {
                 dx[i] = rhs[(i, 0)];
             }
