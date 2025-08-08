@@ -8,7 +8,7 @@ description = "Newton's method for solving systems of nonlinear equations using 
 repository = "https://github.com/alexlatif/newton-faer"
 homepage = "https://github.com/alexlatif/newton-faer"
 documentation = "https://docs.rs/newton-faer"
-keywords = ["nonlinear", "optimization", "algebra", "linear", "faer", "newton"]
+keywords = ["nonlinear", "optimization", "algebra", "linear", "newton"]
 readme = "./README.md"
 include = [
     "src/**/*",
