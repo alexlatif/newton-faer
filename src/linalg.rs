@@ -43,7 +43,6 @@ struct PatternSig {
     nnz: usize,
     col_ptr_hash: u64,
     row_idx_hash: u64,
-    // fast-path: remember the slice addresses if stable across calls
     col_ptr_ptr: *const usize,
     row_idx_ptr: *const usize,
 }
@@ -53,11 +52,9 @@ fn pattern_sig<T>(a: &SparseColMatRef<'_, usize, T>) -> PatternSig {
     let col_ptr = sym.col_ptr();
     let row_idx = sym.row_idx();
 
-    // pointer fast-path info
     let col_ptr_ptr = col_ptr.as_ptr();
     let row_idx_ptr = row_idx.as_ptr();
 
-    // robust hash
     let mut h = fnv1a64_init();
     let col_ptr_hash = hash_usize_slice(h, col_ptr);
     h = fnv1a64_init();
@@ -103,11 +100,10 @@ impl<T: ComplexField<Real = T>> LinearSolver<T, SparseColMatRef<'_, usize, T>> f
         let need_symbolic = match self.sig {
             None => true,
             Some(prev) => {
-                // super-fast path: same backing slices → same structure
                 if prev.col_ptr_ptr == now.col_ptr_ptr && prev.row_idx_ptr == now.row_idx_ptr {
                     false
                 } else {
-                    prev != now // robust compare (dims + hashes)
+                    prev != now
                 }
             }
         };
