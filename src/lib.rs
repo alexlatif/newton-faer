@@ -18,9 +18,17 @@ use faer_traits::ComplexField;
 use num_traits::Zero;
 use std::sync::OnceLock;
 
+/// Describes each row of the sparse matrix.
+/// You can use this to map your system's variables to their index (column) within the matrix being solved.
 pub trait RowMap {
+    /// How you choose to represent each variable being solved for.
     type Var: Copy + Eq;
+    /// The number of rows in the matrix.
+    /// Equivalently, the number of equations in the system of equations being solved.
     fn dim(&self) -> usize;
+    /// For the given row at index `bus`, look up the index of variable `var`.
+    /// This is helpful because this crate represents variables in a slice, using only their
+    /// order in the slice to distinguish them. This function can find which index a given variable is assigned to.
     fn row(&self, bus: usize, var: Self::Var) -> Option<usize>;
 }
 
