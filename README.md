@@ -39,8 +39,9 @@ use faer::sparse::{SymbolicSparseColMat, Pair};
 struct Layout;
 impl RowMap for Layout {
     type Var = ();
+    /// Number of equations in the system
     fn dim(&self) -> usize { 2 }
-    fn row(&self, _i: usize, _v: ()) -> Option<usize> { None }
+    fn row(&self, _i: usize, _v: Self::Var) -> Option<usize> { None }
 }
 
 struct Jc { sym: SymbolicSparseColMat<usize>, vals: Vec<f64> }
