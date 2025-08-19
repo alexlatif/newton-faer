@@ -111,11 +111,12 @@ fn newton_iterate<M, F, Cb>(
     cfg: super::NewtonCfg<M::Real>,
     mut solve_into: F,
     mut on_iter: Cb,
-) -> SolverResult<Iterations>
+) -> SolverResult<Iterations, M::Error>
 where
     M: NonlinearSystem,
     M::Real: ComplexField<Real = M::Real> + Float + Zero + One + ToPrimitive,
-    F: FnMut(&mut M, &[M::Real], &[M::Real], &mut [M::Real]) -> SolverResult<()>,
+    M::Error: std::fmt::Debug + std::fmt::Display + Send + Sync + 'static,
+    F: FnMut(&mut M, &[M::Real], &[M::Real], &mut [M::Real]) -> SolverResult<(), M::Error>,
     Cb: FnMut(&IterationStats<M::Real>) -> Control,
 {
     let n = model.layout().dim();
@@ -129,7 +130,9 @@ where
     let mut f_trial = vec![M::Real::zero(); n];
 
     for iter in 0..cfg.max_iter {
-        model.residual(x, &mut f);
+        model
+            .residual(x, &mut f)
+            .map_err(SolverError::NonLinearSystem)?;
         let res = f
             .iter()
             .map(|&v| v.abs())
@@ -143,7 +146,7 @@ where
             }),
             Control::Cancel
         ) {
-            return Err(Report::new(SolverError).attach_printable("solve cancelled"));
+            return Err(Report::new(SolverError::Solver).attach_printable("solve cancelled"));
         }
         if res < cfg.tol {
             return Ok(iter + 1);
@@ -181,7 +184,9 @@ where
                     for i in 0..n {
                         x_trial[i] = x[i] + alpha * dx[i];
                     }
-                    model.residual(&x_trial, &mut f_trial);
+                    model
+                        .residual(&x_trial, &mut f_trial)
+                        .map_err(SolverError::NonLinearSystem)?;
                     let res_try = f_trial
                         .iter()
                         .map(|&v| v.abs())
@@ -200,7 +205,7 @@ where
                 }
 
                 if !step_applied {
-                    return Err(Report::new(SolverError)
+                    return Err(Report::new(SolverError::Solver)
                         .attach_printable("divergence guard: line search failed"));
                 }
             }
@@ -215,7 +220,7 @@ where
         last_res = res;
     }
 
-    Err(Report::new(SolverError).attach_printable(format!(
+    Err(Report::new(SolverError::Solver).attach_printable(format!(
         "Newton solver did not converge after {} iterations",
         cfg.max_iter
     )))
@@ -225,10 +230,11 @@ pub fn solve<M>(
     model: &mut M,
     x: &mut [M::Real],
     cfg: super::NewtonCfg<M::Real>,
-) -> SolverResult<Iterations>
+) -> SolverResult<Iterations, M::Error>
 where
     M: NonlinearSystem,
     M::Real: ComplexField<Real = M::Real> + Float + Zero + One + ToPrimitive,
+    M::Error: std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
 {
     solve_cb(model, x, cfg, |_| Control::Continue)
 }
@@ -238,9 +244,10 @@ pub fn solve_cb<M, Cb>(
     x: &mut [M::Real],
     cfg: super::NewtonCfg<M::Real>,
     on_iter: Cb,
-) -> SolverResult<Iterations>
+) -> SolverResult<Iterations, M::Error>
 where
     M: NonlinearSystem,
+    M::Error: std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
     M::Real: ComplexField<Real = M::Real> + Float + Zero + One + ToPrimitive,
     Cb: FnMut(&IterationStats<M::Real>) -> Control,
 {
@@ -266,11 +273,12 @@ pub fn solve_sparse_cb<M, L, Cb>(
     lin: &mut L,
     cfg: super::NewtonCfg<M::Real>,
     on_iter: Cb,
-) -> SolverResult<Iterations>
+) -> SolverResult<Iterations, M::Error>
 where
     M: NonlinearSystem,
-    L: for<'a> LinearSolver<M::Real, SparseColMatRef<'a, usize, M::Real>>,
+    L: for<'a> LinearSolver<M::Real, SparseColMatRef<'a, usize, M::Real>, M::Error>,
     M::Real: ComplexField<Real = M::Real> + Float + Zero + One + ToPrimitive,
+    M::Error: std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
     Cb: FnMut(&IterationStats<M::Real>) -> Control,
 {
     let n = model.layout().dim();
@@ -281,7 +289,9 @@ where
         x,
         cfg,
         |model, x, f, dx| {
-            model.refresh_jacobian(x);
+            model
+                .refresh_jacobian(x)
+                .map_err(SolverError::NonLinearSystem)?;
             lin.factor(&model.jacobian().attach())?;
 
             rhs.col_mut(0)
@@ -307,11 +317,12 @@ pub fn solve_dense_cb<M, L, Cb>(
     lu: &mut L,
     cfg: super::NewtonCfg<M::Real>,
     on_iter: Cb,
-) -> SolverResult<Iterations>
+) -> SolverResult<Iterations, M::Error>
 where
     M: NonlinearSystem,
-    L: LinearSolver<M::Real, Mat<M::Real>>,
+    L: LinearSolver<M::Real, Mat<M::Real>, M::Error>,
     M::Real: ComplexField<Real = M::Real> + Float + Zero + One + ToPrimitive,
+    M::Error: std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
     Cb: FnMut(&IterationStats<M::Real>) -> Control,
 {
     let n = model.layout().dim();
@@ -323,7 +334,9 @@ where
         x,
         cfg,
         |model, x, f, dx| {
-            model.jacobian_dense(x, &mut jac);
+            model
+                .jacobian_dense(x, &mut jac)
+                .map_err(|e| Report::new(SolverError::NonLinearSystem(e)))?;
             lu.factor(&jac)?;
             for (i, &fi) in f.iter().enumerate() {
                 rhs[(i, 0)] = -fi;

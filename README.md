@@ -67,19 +67,21 @@ impl Model {
 impl NonlinearSystem for Model {
     type Real = f64;
     type Layout = Layout;
+    type Error = &'static str,
 
     fn layout(&self) -> &Self::Layout { &self.lay }
     fn jacobian(&self) -> &dyn JacobianCache<Self::Real> { &self.jac }
     fn jacobian_mut(&mut self) -> &mut dyn JacobianCache<Self::Real> { &mut self.jac }
 
-    fn residual(&self, x: &[f64], out: &mut [f64]) {
+    fn residual(&self, x: &[f64], out: &mut [f64]) -> Result<(), Self::Error> {
         // f1 = sin(x) + y
         // f2 = x + exp(y) - 1
         out[0] = x[0].sin() + x[1];
         out[1] = x[0] + x[1].exp() - 1.0;
+        Ok(())
     }
 
-    fn refresh_jacobian(&mut self, x: &[f64]) {
+    fn refresh_jacobian(&mut self, x: &[f64]) -> Result<(), Self::Error> {
         // J = [[cos(x), 1],
         //      [     1, exp(y)]] in CSC (col-major): (0,0),(1,0),(0,1),(1,1)
         let v = self.jac.values_mut();
@@ -87,6 +89,7 @@ impl NonlinearSystem for Model {
         v[1] = 1.0;
         v[2] = 1.0;
         v[3] = x[1].exp();
+        Ok(())
     }
 }
 
