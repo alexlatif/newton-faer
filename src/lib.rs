@@ -44,15 +44,20 @@ impl<T> Pattern<T> {
 pub trait NonlinearSystem {
     type Real: num_traits::Float;
     type Layout: RowMap;
+    type Error;
 
     fn layout(&self) -> &Self::Layout;
     fn jacobian(&self) -> &dyn JacobianCache<Self::Real>;
     fn jacobian_mut(&mut self) -> &mut dyn JacobianCache<Self::Real>;
-    fn residual(&self, x: &[Self::Real], out: &mut [Self::Real]);
-    fn refresh_jacobian(&mut self, x: &[Self::Real]);
+    fn residual(&self, x: &[Self::Real], out: &mut [Self::Real]) -> Result<(), Self::Error>;
+    fn refresh_jacobian(&mut self, x: &[Self::Real]) -> Result<(), Self::Error>;
 
-    fn jacobian_dense(&mut self, x: &[Self::Real], jac: &mut faer::mat::Mat<Self::Real>) {
-        self.refresh_jacobian(x);
+    fn jacobian_dense(
+        &mut self,
+        x: &[Self::Real],
+        jac: &mut faer::mat::Mat<Self::Real>,
+    ) -> Result<(), Self::Error> {
+        self.refresh_jacobian(x)?;
         let sparse = self.jacobian().attach();
         jac.fill(Self::Real::zero());
         let row_idx = sparse.symbolic().row_idx();
@@ -63,12 +68,13 @@ pub trait NonlinearSystem {
                 jac[(row_idx[idx], col)] = vals[idx];
             }
         }
+        Ok(())
     }
 }
 
-pub trait LinearSolver<T: ComplexField<Real = T>, M> {
-    fn factor(&mut self, a: &M) -> SolverResult<()>;
-    fn solve_in_place(&mut self, rhs: &mut Mat<T>) -> SolverResult<()>;
+pub trait LinearSolver<T: ComplexField<Real = T>, M, E> {
+    fn factor(&mut self, a: &M) -> SolverResult<(), E>;
+    fn solve_in_place(&mut self, rhs: &mut Mat<T>) -> SolverResult<(), E>;
 }
 
 pub trait JacobianCache<T /* Real */> {
@@ -82,17 +88,25 @@ pub trait JacobianCache<T /* Real */> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SolverError;
+pub enum SolverError<E> {
+    /// Problem within the solver internals
+    Solver,
+    /// Problem in the user's nonlinear system.
+    NonLinearSystem(E),
+}
 
-impl Display for SolverError {
+impl<E: std::fmt::Display> Display for SolverError<E> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("solver error")
+        match self {
+            SolverError::Solver => f.write_str("solver error"),
+            SolverError::NonLinearSystem(err) => err.fmt(f),
+        }
     }
 }
 
-impl std::error::Error for SolverError {}
+impl<E> std::error::Error for SolverError<E> where E: std::fmt::Debug + std::fmt::Display {}
 
-pub type SolverResult<T> = Result<T, error_stack::Report<SolverError>>;
+pub type SolverResult<T, E> = Result<T, error_stack::Report<SolverError<E>>>;
 
 static RAYON_INIT: OnceLock<usize> = OnceLock::new();
 
@@ -188,6 +202,7 @@ mod tests {
     impl NonlinearSystem for Model {
         type Real = f64;
         type Layout = TwoVarLayout;
+        type Error = &'static str;
 
         fn layout(&self) -> &Self::Layout {
             &self.layout
@@ -200,19 +215,21 @@ mod tests {
             &mut self.jac
         }
 
-        fn residual(&self, x: &[Self::Real], out: &mut [Self::Real]) {
+        fn residual(&self, x: &[Self::Real], out: &mut [Self::Real]) -> Result<(), Self::Error> {
             let (xx, yy) = (x[0], x[1]);
             out[0] = xx + yy - 3.0;
             out[1] = xx * xx + yy - 3.0;
+            Ok(())
         }
 
-        fn refresh_jacobian(&mut self, x: &[Self::Real]) {
+        fn refresh_jacobian(&mut self, x: &[Self::Real]) -> Result<(), Self::Error> {
             let xx = x[0];
             let v = self.jac.values_mut();
             v[0] = 1.0;
             v[1] = 2.0 * xx;
             v[2] = 1.0;
             v[3] = 1.0;
+            Ok(())
         }
     }
 

@@ -92,8 +92,12 @@ impl<T: ComplexField<Real = T>> Default for FaerLu<T> {
     }
 }
 
-impl<T: ComplexField<Real = T>> LinearSolver<T, SparseColMatRef<'_, usize, T>> for FaerLu<T> {
-    fn factor(&mut self, a: &SparseColMatRef<'_, usize, T>) -> SolverResult<()> {
+impl<T, E> LinearSolver<T, SparseColMatRef<'_, usize, T>, E> for FaerLu<T>
+where
+    T: ComplexField<Real = T>,
+    E: std::fmt::Debug + std::fmt::Display + Sync + Send + 'static,
+{
+    fn factor(&mut self, a: &SparseColMatRef<'_, usize, T>) -> SolverResult<(), E> {
         let now = pattern_sig(a);
         let par = Par::rayon(0);
 
@@ -112,13 +116,13 @@ impl<T: ComplexField<Real = T>> LinearSolver<T, SparseColMatRef<'_, usize, T>> f
             self.sym = Some(
                 factorize_symbolic_lu(a.symbolic(), LuSymbolicParams::default())
                     .attach_printable("LU symbolic factorization failed")
-                    .change_context(SolverError)?,
+                    .change_context(SolverError::Solver)?,
             );
 
             let scratch_size = self
                 .sym
                 .as_ref()
-                .ok_or(SolverError)
+                .ok_or(SolverError::Solver)
                 .attach_printable("Symbolic factorization missing")?
                 .factorize_numeric_lu_scratch::<T>(par, Default::default());
             self.scratch = Some(MemBuffer::new(scratch_size));
@@ -128,26 +132,26 @@ impl<T: ComplexField<Real = T>> LinearSolver<T, SparseColMatRef<'_, usize, T>> f
         let mut stack = MemStack::new(
             self.scratch
                 .as_mut()
-                .ok_or(SolverError)
+                .ok_or(SolverError::Solver)
                 .attach_printable("Scratch buffer not initialized")?,
         );
 
         self.sym
             .as_ref()
-            .ok_or(SolverError)
+            .ok_or(SolverError::Solver)
             .attach_printable("Symbolic factorization not available")?
             .factorize_numeric_lu(&mut self.num, *a, par, &mut stack, Default::default())
             .attach_printable("Numeric LU factorization failed")
-            .change_context(SolverError)?;
+            .change_context(SolverError::Solver)?;
 
         Ok(())
     }
 
-    fn solve_in_place(&mut self, rhs: &mut Mat<T>) -> SolverResult<()> {
+    fn solve_in_place(&mut self, rhs: &mut Mat<T>) -> SolverResult<(), E> {
         let mut stack = MemStack::new(
             self.scratch
                 .as_mut()
-                .ok_or(SolverError)
+                .ok_or(SolverError::Solver)
                 .attach_printable("Scratch buffer not available for solve")?,
         );
 
@@ -155,7 +159,7 @@ impl<T: ComplexField<Real = T>> LinearSolver<T, SparseColMatRef<'_, usize, T>> f
             LuRef::new_unchecked(
                 self.sym
                     .as_ref()
-                    .ok_or(SolverError)
+                    .ok_or(SolverError::Solver)
                     .attach_printable("Symbolic factorization not available for solve")?,
                 &self.num,
             )
@@ -176,17 +180,21 @@ impl<T: ComplexField<Real = T>> Default for DenseLu<T> {
     }
 }
 
-impl<T: ComplexField<Real = T>> LinearSolver<T, Mat<T>> for DenseLu<T> {
-    fn factor(&mut self, a: &Mat<T>) -> SolverResult<()> {
+impl<T, E> LinearSolver<T, Mat<T>, E> for DenseLu<T>
+where
+    T: ComplexField<Real = T>,
+    E: std::fmt::Debug + std::fmt::Display + Sync + Send + 'static,
+{
+    fn factor(&mut self, a: &Mat<T>) -> SolverResult<(), E> {
         self.lu = Some(a.full_piv_lu());
         Ok(())
     }
 
-    fn solve_in_place(&mut self, rhs: &mut Mat<T>) -> SolverResult<()> {
+    fn solve_in_place(&mut self, rhs: &mut Mat<T>) -> SolverResult<(), E> {
         let lu = self
             .lu
             .as_ref()
-            .ok_or(SolverError)
+            .ok_or(SolverError::Solver)
             .attach_printable("Dense LU not factorized")?;
 
         let solution = lu.solve(rhs.as_ref());
