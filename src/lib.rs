@@ -3,7 +3,7 @@
 mod linalg;
 mod solver;
 
-pub use linalg::{DenseLu, FaerLu};
+pub use linalg::{DenseLu, FaerLu, SparseQr};
 pub use solver::{
     Control, IterationStats, Iterations, MatrixFormat, NewtonCfg, solve, solve_cb, solve_dense_cb,
     solve_sparse_cb,
@@ -245,8 +245,8 @@ mod tests {
     }
 
     #[test]
-    fn errors_on_non_square_system() {
-        // A dummy system with 2 variables and 3 residuals.
+    fn solves_non_square_system() {
+        // A system with 2 variables and 3 residuals (overdetermined).
         struct NonSquareLayout;
         impl RowMap for NonSquareLayout {
             type Var = ();
@@ -261,9 +261,52 @@ mod tests {
             }
         }
 
+        #[derive(Clone)]
+        struct NonSquareJc {
+            sym: SymbolicSparseColMat<usize>,
+            vals: Vec<f64>,
+        }
+        impl JacobianCache<f64> for NonSquareJc {
+            fn symbolic(&self) -> &SymbolicSparseColMat<usize> {
+                &self.sym
+            }
+            fn values(&self) -> &[f64] {
+                &self.vals
+            }
+            fn values_mut(&mut self) -> &mut [f64] {
+                &mut self.vals
+            }
+        }
+
         struct NonSquareModel {
             layout: NonSquareLayout,
+            jac: NonSquareJc,
         }
+
+        impl NonSquareModel {
+            fn new() -> Self {
+                // Jacobian pattern: 3 residuals x 2 variables
+                let pairs = vec![
+                    Pair { row: 0, col: 0 },
+                    Pair { row: 0, col: 1 }, // First residual depends on both vars.
+                    Pair { row: 1, col: 0 },
+                    Pair { row: 1, col: 1 }, // Second residual depends on both vars.
+                    Pair { row: 2, col: 0 },
+                    Pair { row: 2, col: 1 }, // Third residual depends on both vars.
+                ];
+                let (sym, _argsort) =
+                    SymbolicSparseColMat::try_new_from_indices(3, 2, &pairs).unwrap();
+                let nnz = sym.col_ptr()[sym.ncols()];
+                Self {
+                    layout: NonSquareLayout,
+                    jac: NonSquareJc {
+                        sym,
+                        vals: vec![0.0; nnz],
+                    },
+                }
+            }
+        }
+
         impl NonlinearSystem for NonSquareModel {
             type Real = f64;
             type Layout = NonSquareLayout;
@@ -271,32 +314,242 @@ mod tests {
             fn layout(&self) -> &Self::Layout {
                 &self.layout
             }
-            // The solver should fail before ever calling these methods.
             fn jacobian(&self) -> &dyn JacobianCache<Self::Real> {
-                unimplemented!()
+                &self.jac
             }
             fn jacobian_mut(&mut self) -> &mut dyn JacobianCache<Self::Real> {
-                unimplemented!()
+                &mut self.jac
             }
-            fn residual(&self, _x: &[Self::Real], _out: &mut [Self::Real]) {
-                unimplemented!()
+            fn residual(&self, x: &[Self::Real], out: &mut [Self::Real]) {
+                let (xx, yy) = (x[0], x[1]);
+
+                // Overdetermined system.
+                // x + y = 3
+                // x - y = 1
+                // 2x + y = 5
+                out[0] = xx + yy - 3.0;
+                out[1] = xx - yy - 1.0;
+                out[2] = 2.0 * xx + yy - 5.0;
             }
             fn refresh_jacobian(&mut self, _x: &[Self::Real]) {
-                unimplemented!()
+                let v = self.jac.values_mut();
+                // Jacobian entries in column-major order.
+                // d(r0)/dx = 1
+                // d(r1)/dx = 1
+                // d(r2)/dx = 2
+                // d(r0)/dy = 1
+                // d(r1)/dy = -1
+                // d(r2)/dy = 1
+
+                v[0] = 1.0;
+                v[1] = 1.0;
+                v[2] = 2.0;
+                v[3] = 1.0;
+                v[4] = -1.0;
+                v[5] = 1.0;
             }
         }
 
-        let mut model = NonSquareModel {
-            layout: NonSquareLayout,
-        };
-        // Initial guess for 2 variables.
-        let mut x = [0.0, 0.0];
-        let cfg = NewtonCfg::<f64>::default();
+        let mut model = NonSquareModel::new();
+        let mut x = [1.0_f64, 1.0_f64]; // Initial guess
+        let cfg = NewtonCfg::<f64>::sparse().with_threads(1);
 
         let result = crate::solve(&mut model, &mut x, cfg);
 
-        assert!(result.is_err());
-        let err_msg = format!("{:?}", result.unwrap_err());
-        assert!(err_msg.contains("Non-square systems are not yet supported."));
+        // The solver should now work with QR.
+        assert!(result.is_ok());
+        let iters = result.unwrap();
+        assert!(iters > 0 && iters <= 25);
+
+        // Check that we found a least-squares solution
+        // The exact solution would be x=2, y=1 (satisfies first two equations exactly).
+        let tol = 1e-6;
+        assert!((x[0] - 2.0).abs() < tol);
+        assert!((x[1] - 1.0).abs() < tol);
+    }
+
+    #[test]
+    fn solves_gaussian_peak_fitting() {
+        // Fit data to Gaussian: y = a * exp(-((x-mu)/sigma)^2)
+        // 3 parameters for amplitude, mean and std dev (a, mu, sigma) with 5 data points (overdetermined).
+        // https://en.wikipedia.org/wiki/Gaussian_function
+        struct GaussianLayout;
+        impl RowMap for GaussianLayout {
+            type Var = ();
+            fn n_variables(&self) -> usize {
+                3
+            }
+            fn n_residuals(&self) -> usize {
+                5
+            }
+            fn row(&self, _bus: usize, _var: Self::Var) -> Option<usize> {
+                None
+            }
+        }
+
+        #[derive(Clone)]
+        struct GaussianJc {
+            sym: SymbolicSparseColMat<usize>,
+            vals: Vec<f64>,
+        }
+        impl JacobianCache<f64> for GaussianJc {
+            fn symbolic(&self) -> &SymbolicSparseColMat<usize> {
+                &self.sym
+            }
+            fn values(&self) -> &[f64] {
+                &self.vals
+            }
+            fn values_mut(&mut self) -> &mut [f64] {
+                &mut self.vals
+            }
+        }
+
+        struct GaussianModel {
+            layout: GaussianLayout,
+            jac: GaussianJc,
+            data: Vec<(f64, f64)>,
+        }
+
+        impl GaussianModel {
+            fn new() -> Self {
+                // Jacobian: 5 residuals x 3 variables, all related.
+                let pairs = vec![
+                    Pair { row: 0, col: 0 },
+                    Pair { row: 0, col: 1 },
+                    Pair { row: 0, col: 2 },
+                    Pair { row: 1, col: 0 },
+                    Pair { row: 1, col: 1 },
+                    Pair { row: 1, col: 2 },
+                    Pair { row: 2, col: 0 },
+                    Pair { row: 2, col: 1 },
+                    Pair { row: 2, col: 2 },
+                    Pair { row: 3, col: 0 },
+                    Pair { row: 3, col: 1 },
+                    Pair { row: 3, col: 2 },
+                    Pair { row: 4, col: 0 },
+                    Pair { row: 4, col: 1 },
+                    Pair { row: 4, col: 2 },
+                ];
+                let (sym, _argsort) =
+                    SymbolicSparseColMat::try_new_from_indices(5, 3, &pairs).unwrap();
+                let nnz = sym.col_ptr()[sym.ncols()];
+
+                // Data generated from y = 2.0 * exp(-((x-1.0)/0.8)^2).
+                let x_vals = [-1.0, 0.0, 1.0, 2.0, 2.5];
+                let a = 2.0;
+                let mu = 1.0;
+                let sigma = 0.8;
+
+                let data: Vec<(f64, f64)> = x_vals
+                    .iter()
+                    .map(|&x| {
+                        let x = x as f64;
+                        let y = a * (-((x - mu) / sigma).powi(2)).exp();
+                        (x, y)
+                    })
+                    .collect();
+
+                Self {
+                    layout: GaussianLayout,
+                    jac: GaussianJc {
+                        sym,
+                        vals: vec![0.0; nnz],
+                    },
+                    data,
+                }
+            }
+        }
+
+        impl NonlinearSystem for GaussianModel {
+            type Real = f64;
+            type Layout = GaussianLayout;
+
+            fn layout(&self) -> &Self::Layout {
+                &self.layout
+            }
+            fn jacobian(&self) -> &dyn JacobianCache<Self::Real> {
+                &self.jac
+            }
+            fn jacobian_mut(&mut self) -> &mut dyn JacobianCache<Self::Real> {
+                &mut self.jac
+            }
+
+            fn residual(&self, x: &[Self::Real], out: &mut [Self::Real]) {
+                let (a, mu, sigma) = (x[0], x[1], x[2]);
+
+                for (i, &(xi, yi)) in self.data.iter().enumerate() {
+                    let z = (xi - mu) / sigma;
+                    let gaussian = a * (-z * z).exp();
+                    out[i] = gaussian - yi;
+                }
+            }
+
+            fn refresh_jacobian(&mut self, x: &[Self::Real]) {
+                let (a, mu, sigma) = (x[0], x[1], x[2]);
+                let v = self.jac.values_mut();
+
+                for (i, &(xi, _)) in self.data.iter().enumerate() {
+                    let z = (xi - mu) / sigma;
+                    let exp_term = (-z * z).exp();
+                    let gaussian = a * exp_term;
+                    let n_eqn = 5;
+
+                    // dr/da = exp(-z^2)
+                    v[i] = exp_term;
+
+                    // dr/dmu = a * exp(-z^2) * 2z/sigma = gaussian * 2(xi-mu)/sigma^2
+                    v[i + n_eqn] = gaussian * 2.0 * (xi - mu) / (sigma * sigma);
+
+                    // dr/dsigma = a * exp(-z^2) * 2z^2/sigma = gaussian * 2(xi-mu)^2/sigma^3
+                    v[i + n_eqn * 2] =
+                        gaussian * 2.0 * (xi - mu) * (xi - mu) / (sigma * sigma * sigma);
+                }
+            }
+        }
+
+        let mut model = GaussianModel::new();
+
+        // Initial guess: amplitude, mean, std_dev.
+        let mut x = [1.8_f64, 0.5_f64, 1.2_f64];
+        let cfg = NewtonCfg::<f64>::sparse()
+            .with_adaptive(true)
+            .with_threads(1);
+
+        let callback = |stats: &IterationStats<f64>| {
+            println!(
+                "Iter: {:>2}, Residual: {:.4e}, Damping: {:.4}",
+                stats.iter, stats.residual, stats.damping
+            );
+            Control::Continue
+        };
+
+        // Use callback version for reporting.
+        let result = crate::solve_cb(&mut model, &mut x, cfg, callback);
+
+        // The solver should converge to the true parameters.
+        assert!(result.is_ok());
+        let iters = result.unwrap();
+        assert!(iters > 0 && iters <= 50);
+
+        // Check that we recovered the original Gaussian parameters:
+        // True values: a=2.0, mu=1.0, sigma=0.8.
+        println!(
+            "Fitted parameters: a={:.4}, mu={:.4}, sigma={:.4}",
+            x[0], x[1], x[2]
+        );
+
+        let tol = 1e-6;
+
+        assert!(
+            (x[0] - 2.0).abs() < tol,
+            "Amplitude should be 2.0, got {}",
+            x[0]
+        );
+        assert!((x[1] - 1.0).abs() < tol, "Mean should be 1.0, got {}", x[1]);
+        assert!(
+            (x[2] - 0.8).abs() < tol,
+            "Std dev should be 0.8, got {}",
+            x[2]
+        );
     }
 }

@@ -1,7 +1,7 @@
 use super::{
     LinearSolver, Mat, NonlinearSystem, RowMap, SolverError, SolverResult, SparseColMatRef,
     init_global_parallelism,
-    linalg::{DenseLu, FaerLu},
+    linalg::{DenseLu, FaerLu, SparseQr},
 };
 use error_stack::Report;
 use faer::mat::Mat as FaerMat;
@@ -133,10 +133,16 @@ where
 
     for iter in 0..cfg.max_iter {
         model.residual(x, &mut f);
+        //  TODO: Switch between inf norm and 2-norm.
+        // let res = f
+        //     .iter()
+        //     .map(|&v| v.abs())
+        //     .fold(M::Real::zero(), |a, b| if a > b { a } else { b });
         let res = f
             .iter()
-            .map(|&v| v.abs())
-            .fold(M::Real::zero(), |a, b| if a > b { a } else { b });
+            .map(|&v| v * v)
+            .fold(M::Real::zero(), |a, b| a + b)
+            .sqrt();
 
         if matches!(
             on_iter(&IterationStats {
@@ -185,10 +191,17 @@ where
                         x_trial[i] = x[i] + alpha * dx[i];
                     }
                     model.residual(&x_trial, &mut f_trial);
+                    //  TODO: Switch between inf norm and 2-norm.
+                    // let res_try = f_trial
+                    //     .iter()
+                    //     .map(|&v| v.abs())
+                    //     .fold(M::Real::zero(), |a, b| if a > b { a } else { b });
+
                     let res_try = f_trial
                         .iter()
-                        .map(|&v| v.abs())
-                        .fold(M::Real::zero(), |a, b| if a > b { a } else { b });
+                        .map(|&v| v * v)
+                        .fold(M::Real::zero(), |a, b| a + b)
+                        .sqrt();
 
                     if res_try < res {
                         x.copy_from_slice(&x_trial);
@@ -250,12 +263,6 @@ where
     let n_vars = model.layout().n_variables();
     let n_res = model.layout().n_residuals();
 
-    if n_vars != n_res {
-        return Err(
-            Report::new(SolverError).attach_printable("Non-square systems are not yet supported.")
-        );
-    }
-
     let use_dense = match cfg.format {
         super::MatrixFormat::Dense => true,
         super::MatrixFormat::Sparse => false,
@@ -265,9 +272,14 @@ where
     if use_dense {
         let mut lu = DenseLu::<M::Real>::default();
         solve_dense_cb(model, x, &mut lu, cfg, on_iter)
-    } else {
+    } else if n_vars == n_res {
+        // Square system: use LU factorisation.
         let mut lu = FaerLu::<M::Real>::default();
         solve_sparse_cb(model, x, &mut lu, cfg, on_iter)
+    } else {
+        // Non-square system: use QR factorisation for least squares.
+        let mut qr = SparseQr::<M::Real>::default();
+        solve_sparse_cb(model, x, &mut qr, cfg, on_iter)
     }
 }
 
@@ -285,8 +297,9 @@ where
     Cb: FnMut(&IterationStats<M::Real>) -> Control,
 {
     let n_vars = model.layout().n_variables();
-    let mut rhs = FaerMat::<M::Real>::zeros(n_vars, 1);
-    let mut sol = FaerMat::<M::Real>::zeros(n_vars, 1);
+    let n_res = model.layout().n_residuals();
+    let mut rhs = FaerMat::<M::Real>::zeros(n_res, 1);
+    // let mut sol = FaerMat::<M::Real>::zeros(n_vars, 1);
 
     newton_iterate(
         model,
@@ -302,10 +315,15 @@ where
                 .zip(f.iter())
                 .for_each(|(dst, &src)| *dst = -src);
 
-            lin.solve_into(rhs.as_ref(), sol.as_mut())?;
+            // For QR least squares, we need a working buffer that can hold the residuals.
+            // The QR solver will put the solution in the first n_vars rows.
+            let mut qr_work = FaerMat::<M::Real>::zeros(n_res, 1);
+            qr_work.copy_from(rhs.as_ref());
 
-            // Copy solution back to dx slice.
-            for (i, &val) in sol.col(0).iter().enumerate() {
+            lin.solve_into(rhs.as_ref(), qr_work.as_mut())?;
+
+            // Copy solution back to dx slice (first n_vars rows contain the solution).
+            for (i, &val) in qr_work.col(0).iter().take(n_vars).enumerate() {
                 dx[i] = val;
             }
 
