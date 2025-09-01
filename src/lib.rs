@@ -20,7 +20,8 @@ use std::sync::OnceLock;
 
 pub trait RowMap {
     type Var: Copy + Eq;
-    fn dim(&self) -> usize;
+    fn n_variables(&self) -> usize;
+    fn n_residuals(&self) -> usize;
     fn row(&self, bus: usize, var: Self::Var) -> Option<usize>;
 }
 
@@ -135,7 +136,10 @@ mod tests {
     struct TwoVarLayout;
     impl RowMap for TwoVarLayout {
         type Var = ();
-        fn dim(&self) -> usize {
+        fn n_variables(&self) -> usize {
+            2
+        }
+        fn n_residuals(&self) -> usize {
             2
         }
         fn row(&self, _bus: usize, _var: Self::Var) -> Option<usize> {

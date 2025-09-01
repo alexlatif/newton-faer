@@ -118,15 +118,18 @@ where
     F: FnMut(&mut M, &[M::Real], &[M::Real], &mut [M::Real]) -> SolverResult<()>,
     Cb: FnMut(&IterationStats<M::Real>) -> Control,
 {
-    let n = model.layout().dim();
-    let mut f = vec![M::Real::zero(); n];
-    let mut dx = vec![M::Real::zero(); n];
+    let n_vars = model.layout().n_variables();
+    let n_res = model.layout().n_residuals();
+
+    // `f` holds residuals, `dx` holds the step for the variables.
+    let mut f = vec![M::Real::zero(); n_res];
+    let mut dx = vec![M::Real::zero(); n_vars];
     let mut damping = cfg.damping;
     let mut last_res = M::Real::infinity();
 
     // buffers for line search
-    let mut x_trial = vec![M::Real::zero(); n];
-    let mut f_trial = vec![M::Real::zero(); n];
+    let mut x_trial = vec![M::Real::zero(); n_vars];
+    let mut f_trial = vec![M::Real::zero(); n_res];
 
     for iter in 0..cfg.max_iter {
         model.residual(x, &mut f);
@@ -178,7 +181,7 @@ where
                 };
 
                 for _ in 0..cfg.ls_max_steps {
-                    for i in 0..n {
+                    for i in 0..n_vars {
                         x_trial[i] = x[i] + alpha * dx[i];
                     }
                     model.residual(&x_trial, &mut f_trial);
@@ -244,11 +247,19 @@ where
     M::Real: ComplexField<Real = M::Real> + Float + Zero + One + ToPrimitive,
     Cb: FnMut(&IterationStats<M::Real>) -> Control,
 {
-    let n = model.layout().dim();
+    let n_vars = model.layout().n_variables();
+    let n_res = model.layout().n_residuals();
+
+    if n_vars != n_res {
+        return Err(
+            Report::new(SolverError).attach_printable("Non-square systems are not yet supported.")
+        );
+    }
+
     let use_dense = match cfg.format {
         super::MatrixFormat::Dense => true,
         super::MatrixFormat::Sparse => false,
-        super::MatrixFormat::Auto(threshold) => n < threshold,
+        super::MatrixFormat::Auto(threshold) => n_vars < threshold,
     };
 
     if use_dense {
@@ -273,8 +284,8 @@ where
     M::Real: ComplexField<Real = M::Real> + Float + Zero + One + ToPrimitive,
     Cb: FnMut(&IterationStats<M::Real>) -> Control,
 {
-    let n = model.layout().dim();
-    let mut rhs = FaerMat::<M::Real>::zeros(n, 1);
+    let n_vars = model.layout().n_variables();
+    let mut rhs = FaerMat::<M::Real>::zeros(n_vars, 1);
 
     newton_iterate(
         model,
@@ -292,7 +303,7 @@ where
 
             lin.solve_in_place(&mut rhs)?;
 
-            for i in 0..n {
+            for i in 0..n_vars {
                 dx[i] = rhs[(i, 0)];
             }
             Ok(())
@@ -314,9 +325,9 @@ where
     M::Real: ComplexField<Real = M::Real> + Float + Zero + One + ToPrimitive,
     Cb: FnMut(&IterationStats<M::Real>) -> Control,
 {
-    let n = model.layout().dim();
-    let mut jac = FaerMat::<M::Real>::zeros(n, n);
-    let mut rhs = FaerMat::<M::Real>::zeros(n, 1);
+    let n_vars = model.layout().n_variables();
+    let mut jac = FaerMat::<M::Real>::zeros(n_vars, n_vars);
+    let mut rhs = FaerMat::<M::Real>::zeros(n_vars, 1);
 
     newton_iterate(
         model,
@@ -329,7 +340,7 @@ where
                 rhs[(i, 0)] = -fi;
             }
             lu.solve_in_place(&mut rhs)?;
-            for i in 0..n {
+            for i in 0..n_vars {
                 dx[i] = rhs[(i, 0)];
             }
             Ok(())
