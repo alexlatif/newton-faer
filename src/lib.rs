@@ -242,4 +242,60 @@ mod tests {
         assert!((x[0] - 1.0).abs() < 1e-10);
         assert!((x[1] - 2.0).abs() < 1e-10);
     }
+
+    #[test]
+    fn errors_on_non_square_system() {
+        // A dummy system with 2 variables and 3 residuals.
+        struct NonSquareLayout;
+        impl RowMap for NonSquareLayout {
+            type Var = ();
+            fn n_variables(&self) -> usize {
+                2
+            }
+            fn n_residuals(&self) -> usize {
+                3
+            }
+            fn row(&self, _bus: usize, _var: Self::Var) -> Option<usize> {
+                None
+            }
+        }
+
+        struct NonSquareModel {
+            layout: NonSquareLayout,
+        }
+        impl NonlinearSystem for NonSquareModel {
+            type Real = f64;
+            type Layout = NonSquareLayout;
+
+            fn layout(&self) -> &Self::Layout {
+                &self.layout
+            }
+            // The solver should fail before ever calling these methods.
+            fn jacobian(&self) -> &dyn JacobianCache<Self::Real> {
+                unimplemented!()
+            }
+            fn jacobian_mut(&mut self) -> &mut dyn JacobianCache<Self::Real> {
+                unimplemented!()
+            }
+            fn residual(&self, _x: &[Self::Real], _out: &mut [Self::Real]) {
+                unimplemented!()
+            }
+            fn refresh_jacobian(&mut self, _x: &[Self::Real]) {
+                unimplemented!()
+            }
+        }
+
+        let mut model = NonSquareModel {
+            layout: NonSquareLayout,
+        };
+        // Initial guess for 2 variables.
+        let mut x = [0.0, 0.0];
+        let cfg = NewtonCfg::<f64>::default();
+
+        let result = crate::solve(&mut model, &mut x, cfg);
+
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(err_msg.contains("Non-square systems are not yet supported."));
+    }
 }
